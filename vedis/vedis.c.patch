@@ -1,0 +1,147 @@
+--- a/vedis.c
++++ b/vedis.c
+@@ -927,6 +927,11 @@
+ VEDIS_APIEXPORT const char * vedis_lib_ident(void);
+ VEDIS_APIEXPORT const char * vedis_lib_copyright(void);
+ 
++/* Extend */
++VEDIS_APIEXPORT int vedis_value_string_new(vedis *pStore, const char *pVal, unsigned int nByte, vedis_value **ppOut);
++VEDIS_APIEXPORT int vedis_value_int_new(vedis *pStore, long iVal, vedis_value **ppOut);
++VEDIS_APIEXPORT int vedis_exec_args(vedis *pStore, SyString *cmd, int argc, vedis_value **argv);
++
+ #ifdef __cplusplus
+ }
+ #endif /* __cplusplus */
+@@ -18020,6 +18025,7 @@
+ static int vedis_cmd_msetnx(vedis_context *pCtx,int argc,vedis_value **argv)
+ {
+ 	int i,rc = VEDIS_OK;
++	int result = 1;
+ 	if( argc <  2 ){
+ 		vedis_context_throw_error(pCtx,VEDIS_CTX_ERR,"Missing key/value pair");
+ 		/* return false */
+@@ -18031,16 +18037,18 @@
+ 		rc = vedisFetchValue(pCtx,argv[i],0);
+ 		if( rc == VEDIS_OK ){
+ 			/* Key exists, ignore */
++			result = 0;
+ 			continue;
+ 		}
+ 		/* Perform the store operation */
+ 		rc = VedisStoreValue(pCtx,argv[i],argv[i + 1]);
+ 		if( rc != VEDIS_OK ){
++			result = 0;
+ 			break;
+ 		}
+ 	}
+ 	/* Store result */
+-	vedis_result_bool(pCtx,rc == VEDIS_OK);
++	vedis_result_bool(pCtx,result);
+ 	return VEDIS_OK;
+ }
+ /*
+@@ -23119,6 +23127,104 @@
+ #endif
+ 	 return iNum;
+ }
++/* Extend */
++int vedis_value_string_new(vedis *pStore, const char *pVal, unsigned int nByte, vedis_value **ppOut)
++{
++    vedis_value *pValue;
++
++    pValue = (vedis_value *)SyMemBackendPoolAlloc(&pStore->sMem,sizeof(vedis_value));
++    if (!pValue) {
++        return VEDIS_ABORT;
++    }
++
++    SyZero(pValue, sizeof(vedis_value));
++    SyBlobInit(&pValue->sBlob, &pStore->sMem);
++    if (pVal && nByte > 0) {
++        SyBlobAppend(&pValue->sBlob, (const void *)pVal, nByte);
++    }
++    pValue->iFlags = MEMOBJ_STRING;
++
++    *ppOut = pValue;
++
++    return VEDIS_OK;
++}
++
++int vedis_value_int_new(vedis *pStore, long iVal, vedis_value **ppOut)
++{
++    vedis_value *pValue;
++
++    pValue = (vedis_value *)SyMemBackendPoolAlloc(&pStore->sMem,sizeof(vedis_value));
++    if (!pValue) {
++        return VEDIS_ABORT;
++    }
++
++    SyZero(pValue, sizeof(vedis_value));
++    SyBlobInit(&pValue->sBlob, &pStore->sMem);
++
++    pValue->x.iVal = (vedis_int64)iVal;
++    pValue->iFlags = MEMOBJ_INT;
++
++    *ppOut = pValue;
++
++    return VEDIS_OK;
++}
++
++int vedis_exec_args(vedis *pStore,SyString *cmd,int argc, vedis_value **argv)
++{
++    int i, rc;
++    vedis_context sCtx;
++    vedis_cmd *pCmd;
++    SySet sValue;
++
++    if( VEDIS_DB_MISUSE(pStore) ){
++        return VEDIS_CORRUPT;
++    }
++#if defined(VEDIS_ENABLE_THREADS)
++    /* Acquire DB mutex */
++    SyMutexEnter(sVedisMPGlobal.pMutexMethods, pStore->pMutex); /* NO-OP if sVedisMPGlobal.nThreadingLevel != VEDIS_THREAD_LEVEL_MULTI */
++    if( sVedisMPGlobal.nThreadingLevel > VEDIS_THREAD_LEVEL_SINGLE && 
++        VEDIS_THRD_DB_RELEASE(pStore) ){
++        return VEDIS_ABORT; /* Another thread have released this instance */
++    }
++#endif
++     pCmd = vedisFetchCommand(pStore,cmd);
++     if( pCmd == 0 ){
++         vedisGenErrorFormat(pStore,"Unknown Vedis command: '%z'", &cmd);
++         return VEDIS_ABORT;
++     }
++
++     SySetInit(&sValue,&pStore->sMem,sizeof(vedis_value *));
++
++     for (i = 0; i < argc; i++) {
++         SySetPut(&sValue,(const void *)&argv[i]);
++     }
++     /* Init the call context */
++     vedisInitContext(&sCtx,pStore,pCmd);
++     /* Invoke the command */
++     rc = pCmd->xCmd(&sCtx,(int)SySetUsed(&sValue),(vedis_value **)SySetBasePtr(&sValue));
++     if( rc == VEDIS_ABORT ){
++         vedisGenErrorFormat(pStore,"Vedis command '%z' request an operation abort",&pCmd->sName);
++     }else{
++         rc = VEDIS_OK;
++     }
++     /* Invoke any output consumer callback */
++     if( pStore->xResultConsumer && rc == VEDIS_OK ){
++         rc = pStore->xResultConsumer(sCtx.pRet,pStore->pUserData);
++         if( rc != VEDIS_ABORT ){
++             rc = VEDIS_OK;
++         }
++     }
++     /* Cleanup */
++     vedisReleaseContext(&sCtx);
++     vedisObjContainerDestroy(&sValue,pStore);
++
++#if defined(VEDIS_ENABLE_THREADS)
++     /* Leave DB mutex */
++     SyMutexLeave(sVedisMPGlobal.pMutexMethods,pStore->pMutex); /* NO-OP if sVedisMPGlobal.nThreadingLevel != VEDIS_THREAD_LEVEL_MULTI */
++#endif
++     /* Execution result */
++     return rc;
++}
+ /* END-OF-IMPLEMENTATION: vedis@embedded@symisc 34-09-46 */
+ /*
+  * Symisc Vedis: A Highly Efficient Embeddable Data Store Engine.
