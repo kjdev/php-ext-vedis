@@ -1,4 +1,4 @@
-# Vedis for PHP Extension
+# PHP Extension for Vedis
 
 This extension allows Vedis.
 
@@ -1095,7 +1095,7 @@ $vedis->sTop('key1'); /* member2, 'key1' => {'member1'} */
 * [commit](#commit) - Commit an active write transaction
 * [rollback](#rollback) - Rollback an active write transaction
 * [cmdList](#cmdlist) - List of installed vedis commands
-* [command](#command) - Execute one or more Vedis commands
+* [eval](#eval) - Execute one or more Vedis commands
 * [credits](#credits) - Expand the vedis signature and copyright notice
 
 ----
@@ -1135,13 +1135,13 @@ _**Description**_: List of installed vedis commands
 *Array*: Array of installed vedis commands
 
 ----
-### command
+### eval
 
 _**Description**_: Execute one or more Vedis commands
 
 #### *Parameters*
 
-*command*
+*STRING*: command
 
 #### *Return value*
 
@@ -1150,7 +1150,7 @@ Execution result of the command.
 #### *Example*
 
 ```
-$vedis->command('SET key value; GET key'); /* value */
+$vedis->eval('SET key value; GET key'); /* value */
 ```
 
 ----

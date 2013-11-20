@@ -1634,7 +1634,7 @@ ZEND_METHOD(Vedis, credits)
     VEDIS_RETURN_STRING();
 }
 
-ZEND_METHOD(Vedis, command)
+ZEND_METHOD(Vedis, eval)
 {
     char *cmd;
     int cmd_len;
@@ -1759,7 +1759,7 @@ static zend_function_entry php_vedis_methods[] = {
     ZEND_ME(Vedis, cmdlist, arginfo_vedis_none, ZEND_ACC_PUBLIC)
     ZEND_ME(Vedis, tablelist, arginfo_vedis_none, ZEND_ACC_PUBLIC)
     ZEND_ME(Vedis, credits, arginfo_vedis_none, ZEND_ACC_PUBLIC)
-    ZEND_ME(Vedis, command, arginfo_vedis_param1, ZEND_ACC_PUBLIC)
+    ZEND_ME(Vedis, eval, arginfo_vedis_param1, ZEND_ACC_PUBLIC)
     ZEND_FE_END
 };
 
