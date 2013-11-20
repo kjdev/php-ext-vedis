@@ -1,4 +1,4 @@
-# Vedis fo PHP Extension
+# Vedis for PHP Extension
 
 This extension allows Vedis.
 
