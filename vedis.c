@@ -170,7 +170,7 @@ php_vedis_new(char *storage, int storage_len, zend_bool is_persistent TSRMLS_DC)
 
     if (!storage || storage_len <= 0) {
         stragepath = NULL;
-    } else if (memcmp(storage, ":mem:", sizeof(":mem:")) != 0) {
+    } else if (strcmp(storage, ":mem:") != 0) {
         if (!(filepath = expand_filepath(storage, NULL TSRMLS_CC))) {
             pefree(vedis, is_persistent);
             return NULL;
