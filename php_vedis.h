@@ -3,7 +3,7 @@
 
 #include "vedis/vedis.h"
 
-#define VEDIS_EXT_VERSION "0.1.0"
+#define VEDIS_EXT_VERSION "0.1.1"
 
 extern zend_module_entry vedis_module_entry;
 #define phpext_vedis_ptr &vedis_module_entry

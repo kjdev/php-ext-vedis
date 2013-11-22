@@ -128,24 +128,28 @@ ZEND_END_ARG_INFO()
 #define VEDIS_RETURN_LONG()                   \
     RETURN_LONG(vedis_value_to_int64(result))
 
-#define VEDIS_RETURN_STRING()                          \
-    if (vedis_value_is_null(result)) {                 \
-        RETURN_NULL();                                 \
-    }                                                  \
-    RETURN_STRING(vedis_value_to_string(result, 0), 1)
+#define VEDIS_RETURN_STRING()                                  \
+    if (vedis_value_is_null(result)) {                         \
+        RETURN_NULL();                                         \
+    } else {                                                   \
+        int len = 0;                                           \
+        const char *str = vedis_value_to_string(result, &len); \
+        RETURN_STRINGL(str, len, 1);                           \
+    }
 
-#define VEDIS_RETURN_ARRAY()                                               \
-    array_init(return_value);                                              \
-    if (vedis_value_is_array(result)) {                                    \
-        vedis_value *entry;                                                \
-        while ((entry = vedis_array_next_elem(result)) != 0) {             \
-            if (vedis_value_is_null(entry)) {                              \
-                add_next_index_null(return_value);                         \
-            } else {                                                       \
-                add_next_index_string(return_value,                        \
-                                      vedis_value_to_string(entry, 0), 1); \
-            }                                                              \
-        }                                                                  \
+#define VEDIS_RETURN_ARRAY()                                          \
+    array_init(return_value);                                         \
+    if (vedis_value_is_array(result)) {                               \
+        vedis_value *entry;                                           \
+        while ((entry = vedis_array_next_elem(result)) != 0) {        \
+            if (vedis_value_is_null(entry)) {                         \
+                add_next_index_null(return_value);                    \
+            } else {                                                  \
+                int len = 0;                                          \
+                const char *str = vedis_value_to_string(entry, &len); \
+                add_next_index_stringl(return_value, str, len, 1);    \
+            }                                                         \
+        }                                                             \
     }
 
 
@@ -981,18 +985,21 @@ ZEND_METHOD(Vedis, hgetall)
     array_init(return_value);
 
     if (vedis_value_is_array(result)) {
+        int key_len = 0;
         const char *key;
         vedis_value *entry;
         while ((entry = vedis_array_next_elem(result)) != 0) {
-            key = vedis_value_to_string(entry, 0);
+            key = vedis_value_to_string(entry, &key_len);
             if ((entry = vedis_array_next_elem(result)) == 0) {
                 break;
             }
             if (vedis_value_is_null(entry)) {
-                add_assoc_null_ex(return_value, key, strlen(key) + 1);
+                add_assoc_null_ex(return_value, key, key_len + 1);
             } else {
-                add_assoc_string_ex(return_value, key, strlen(key) + 1,
-                                    (char *)vedis_value_to_string(entry, 0), 1);
+                int len = 0;
+                const char *str = vedis_value_to_string(entry, &len);
+                add_assoc_stringl_ex(return_value,
+                                     key, key_len + 1, (char *)str, len, 1);
             }
         }
     }
@@ -1137,9 +1144,11 @@ ZEND_METHOD(Vedis, hmget)
                 add_assoc_null_ex(return_value,
                                   Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1);
             } else {
-                add_assoc_string_ex(return_value,
-                                    Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1,
-                                    (char *)vedis_value_to_string(entry, 0), 1);
+                int len = 0;
+                const char *str = vedis_value_to_string(entry, &len);
+                add_assoc_stringl_ex(return_value,
+                                     Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1,
+                                     (char *)str, len, 1);
             }
 
             zend_hash_move_forward_ex(HASH_OF(fields), &pos);
@@ -1667,14 +1676,17 @@ ZEND_METHOD(Vedis, eval)
             if (vedis_value_is_null(entry)) {
                 add_next_index_null(return_value);
             } else {
-                add_next_index_string(return_value,
-                                      vedis_value_to_string(entry, 0), 1);
+                int len = 0;
+                const char *str = vedis_value_to_string(entry, &len);
+                add_next_index_stringl(return_value, str, len, 1);
             }
         }
     } else if (vedis_value_is_int(result)) {
         RETURN_LONG(vedis_value_to_int64(result));
     } else {
-        RETURN_STRING(vedis_value_to_string(result, 0), 1);
+        int len = 0;
+        const char *str = vedis_value_to_string(result, &len);
+        RETURN_STRINGL(str, len, 1);
     }
 }
 
