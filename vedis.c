@@ -6,6 +6,7 @@
 #include "php_ini.h"
 #include "php_main.h"
 #include "ext/standard/info.h"
+#include "ext/standard/php_smart_str.h"
 #include "zend_exceptions.h"
 
 #include "php_vedis.h"
@@ -91,9 +92,11 @@ ZEND_END_ARG_INFO()
     args.used = 0;                         \
     args.rc = 0
 
+#define VEDIS_ARGS_RELEASE() php_vedis_args_destroy(&args, 1)
+
 #define VEDIS_ARGS_EXEC(_return)                                            \
     if (!php_vedis_args_success(&args)) {                                   \
-        php_vedis_args_destroy(&args, 1);                                   \
+        VEDIS_ARGS_RELEASE();                                               \
         _return;                                                            \
     }                                                                       \
     rc = vedis_exec_args(intern->vedis->store, &cmd, args.size, args.data); \
@@ -113,11 +116,14 @@ ZEND_END_ARG_INFO()
         RETURN_FALSE;                                   \
     }
 
-#define VEDIS_ARGS_STRING(_str, _len)                    \
+#define VEDIS_ARGS_STRING(_str, _len) \
     php_vedis_args_set_string(&args, intern, _str, _len)
 
-#define VEDIS_ARGS_INT(_num)                    \
+#define VEDIS_ARGS_INT(_num) \
     php_vedis_args_set_int(&args, intern, _num)
+
+#define VEDIS_ARGS_DOUBLE(_num) \
+    php_vedis_args_set_double(&args, intern, _num)
 
 #define VEDIS_RETURN_BOOL()             \
     if (!vedis_value_to_bool(result)) { \
@@ -335,6 +341,27 @@ php_vedis_args_set_int(php_vedis_args *args,
     }
 }
 
+static void
+php_vedis_args_set_double(php_vedis_args *args,
+                          php_vedis_object_t *intern, double num)
+{
+    int rc;
+
+    if (args->used >= args->size) {
+        args->rc = -1;
+        return;
+    }
+
+    rc = vedis_value_double_new(intern->vedis->store, num,
+                                &(args->data[args->used]));
+    if (rc == VEDIS_OK) {
+        args->used++;
+    } else {
+        php_vedis_error(intern, E_WARNING TSRMLS_CC);
+        args->rc = rc;
+    }
+}
+
 static int
 php_vedis_args_success(php_vedis_args *args)
 {
@@ -505,6 +532,7 @@ ZEND_METHOD(Vedis, incr)
 {
     char *key;
     int key_len;
+    zval *zv;
     VEDIS_ARGS_PARAM(INCR, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -525,18 +553,37 @@ ZEND_METHOD(Vedis, incrby)
 {
     char *key;
     int key_len;
-    long num;
+    zval *zv;
     VEDIS_ARGS_PARAM(INCRBY, 6, 2);
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
-                              &key, &key_len, &num) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sz",
+                              &key, &key_len, &zv) == FAILURE) {
         return;
     }
 
     VEDIS_SELF(intern);
 
     VEDIS_ARGS_STRING(key, key_len);
-    VEDIS_ARGS_INT(num);
+
+    switch (Z_TYPE_P(zv)) {
+        case IS_LONG:
+            VEDIS_ARGS_INT(Z_LVAL_P(zv));
+            break;
+        case IS_DOUBLE:
+            VEDIS_ARGS_DOUBLE(Z_DVAL_P(zv));
+            break;
+        case IS_STRING:
+            if (is_numeric_string(Z_STRVAL_P(zv), Z_STRLEN_P(zv),
+                                   NULL, NULL, 0)) {
+                VEDIS_ARGS_STRING(Z_STRVAL_P(zv), Z_STRLEN_P(zv));
+            } else {
+                RETURN_FALSE;
+            }
+            break;
+        default:
+            RETURN_FALSE;
+            break;
+    }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -567,18 +614,37 @@ ZEND_METHOD(Vedis, decrby)
 {
     char *key;
     int key_len;
-    long num;
+    zval *zv;
     VEDIS_ARGS_PARAM(DECRBY, 6, 2);
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sl",
-                              &key, &key_len, &num) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sz",
+                              &key, &key_len, &zv) == FAILURE) {
         return;
     }
 
     VEDIS_SELF(intern);
 
     VEDIS_ARGS_STRING(key, key_len);
-    VEDIS_ARGS_INT(num);
+
+    switch (Z_TYPE_P(zv)) {
+        case IS_LONG:
+            VEDIS_ARGS_INT(Z_LVAL_P(zv));
+            break;
+        case IS_DOUBLE:
+            VEDIS_ARGS_DOUBLE(Z_DVAL_P(zv));
+            break;
+        case IS_STRING:
+            if (is_numeric_string(Z_STRVAL_P(zv), Z_STRLEN_P(zv),
+                                   NULL, NULL, 0)) {
+                VEDIS_ARGS_STRING(Z_STRVAL_P(zv), Z_STRLEN_P(zv));
+            } else {
+                RETURN_FALSE;
+            }
+            break;
+        default:
+            RETURN_FALSE;
+            break;
+    }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -732,7 +798,7 @@ ZEND_METHOD(Vedis, mset)
                                          (void **)&val, &pos) == SUCCESS) {
         char *str_key;
         uint str_key_len;
-        ulong num_key;
+        long num_key;
         int flags;
 
         flags = zend_hash_get_current_key_ex(HASH_OF(members),
@@ -749,7 +815,11 @@ ZEND_METHOD(Vedis, mset)
         if (flags == HASH_KEY_IS_STRING) {
             VEDIS_ARGS_STRING(str_key, str_key_len - 1);
         } else {
-            VEDIS_ARGS_INT(num_key);
+            smart_str buf = {0};
+            smart_str_append_long(&buf, num_key);
+            smart_str_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_str_free(&buf);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(val), Z_STRLEN_PP(val));
 
@@ -788,7 +858,7 @@ ZEND_METHOD(Vedis, msetnx)
                                          (void **)&val, &pos) == SUCCESS) {
         char *str_key;
         uint str_key_len;
-        ulong num_key;
+        long num_key;
         int flags;
 
         flags = zend_hash_get_current_key_ex(HASH_OF(members),
@@ -805,7 +875,11 @@ ZEND_METHOD(Vedis, msetnx)
         if (flags == HASH_KEY_IS_STRING) {
             VEDIS_ARGS_STRING(str_key, str_key_len - 1);
         } else {
-            VEDIS_ARGS_INT(num_key);
+            smart_str buf = {0};
+            smart_str_append_long(&buf, num_key);
+            smart_str_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_str_free(&buf);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(val), Z_STRLEN_PP(val));
 
@@ -1056,7 +1130,7 @@ ZEND_METHOD(Vedis, hmset)
                                          (void **)&val, &pos) == SUCCESS) {
         char *str_key;
         uint str_key_len;
-        ulong num_key;
+        long num_key;
         int flags;
 
         flags = zend_hash_get_current_key_ex(HASH_OF(members),
@@ -1073,7 +1147,11 @@ ZEND_METHOD(Vedis, hmset)
         if (flags == HASH_KEY_IS_STRING) {
             VEDIS_ARGS_STRING(str_key, str_key_len - 1);
         } else {
-            VEDIS_ARGS_INT(num_key);
+            smart_str buf = {0};
+            smart_str_append_long(&buf, num_key);
+            smart_str_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_str_free(&buf);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(val), Z_STRLEN_PP(val));
 
@@ -1140,15 +1218,17 @@ ZEND_METHOD(Vedis, hmget)
                 convert_to_string(*val);
             }
 
-            if (vedis_value_is_null(entry)) {
-                add_assoc_null_ex(return_value,
-                                  Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1);
-            } else {
-                int len = 0;
-                const char *str = vedis_value_to_string(entry, &len);
-                add_assoc_stringl_ex(return_value,
-                                     Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1,
-                                     (char *)str, len, 1);
+            if (Z_STRLEN_PP(val) > 0) {
+                if (vedis_value_is_null(entry)) {
+                    add_assoc_null_ex(return_value,
+                                      Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1);
+                } else {
+                    int len = 0;
+                    const char *str = vedis_value_to_string(entry, &len);
+                    add_assoc_stringl_ex(return_value,
+                                         Z_STRVAL_PP(val), Z_STRLEN_PP(val) + 1,
+                                         (char *)str, len, 1);
+                }
             }
 
             zend_hash_move_forward_ex(HASH_OF(fields), &pos);

@@ -10,6 +10,7 @@ Documentation for Vedis can be found at [» http://vedis.symisc.net/](http://ved
 % phpize
 % ./configure
 % make
+% make test
 % make install
 ```
 
@@ -672,7 +673,6 @@ $vedis->hmGet('h', array('field1', 'field2')); /* array('field1' => 'value1', 'f
 * [lIndex, lGet](#lindex-lget) - Get an element from a list by its index
 * [lPop](#lpop) - Remove and get the first element in a list
 * [lPush](#lpush) - Prepend one or multiple values to a list
-* [lRem, lRemove](#lrem-lremove) - Remove elements from a list
 * [lLen, lSize](#llen-lsize) - Get the length/size of a list
 
 ---
@@ -1165,5 +1165,4 @@ _**Description**_: Expand the vedis signature and copyright notice
 
 ## TODO
 
-* Tests
 * Serializer

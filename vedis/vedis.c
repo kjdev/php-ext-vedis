@@ -930,6 +930,7 @@ VEDIS_APIEXPORT const char * vedis_lib_copyright(void);
 /* Extend */
 VEDIS_APIEXPORT int vedis_value_string_new(vedis *pStore, const char *pVal, unsigned int nByte, vedis_value **ppOut);
 VEDIS_APIEXPORT int vedis_value_int_new(vedis *pStore, long iVal, vedis_value **ppOut);
+VEDIS_APIEXPORT int vedis_value_double_new(vedis *pStore, double rVal, vedis_value **ppOut);
 VEDIS_APIEXPORT int vedis_exec_args(vedis *pStore, SyString *cmd, int argc, vedis_value **argv);
 
 #ifdef __cplusplus
@@ -23163,6 +23164,26 @@ int vedis_value_int_new(vedis *pStore, long iVal, vedis_value **ppOut)
 
     pValue->x.iVal = (vedis_int64)iVal;
     pValue->iFlags = MEMOBJ_INT;
+
+    *ppOut = pValue;
+
+    return VEDIS_OK;
+}
+
+int vedis_value_double_new(vedis *pStore, double rVal, vedis_value **ppOut)
+{
+    vedis_value *pValue;
+
+    pValue = (vedis_value *)SyMemBackendPoolAlloc(&pStore->sMem,sizeof(vedis_value));
+    if (!pValue) {
+        return VEDIS_ABORT;
+    }
+
+    SyZero(pValue, sizeof(vedis_value));
+    SyBlobInit(&pValue->sBlob, &pStore->sMem);
+
+    pValue->x.rVal = (vedis_real)rVal;
+    pValue->iFlags = MEMOBJ_REAL;
 
     *ppOut = pValue;
 

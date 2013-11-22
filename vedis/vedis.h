@@ -851,6 +851,7 @@ VEDIS_APIEXPORT const char * vedis_lib_copyright(void);
 /* Extend */
 VEDIS_APIEXPORT int vedis_value_string_new(vedis *pStore, const char *pVal, unsigned int nByte, vedis_value **ppOut);
 VEDIS_APIEXPORT int vedis_value_int_new(vedis *pStore, long iVal, vedis_value **ppOut);
+VEDIS_APIEXPORT int vedis_value_double_new(vedis *pStore, double rVal, vedis_value **ppOut);
 VEDIS_APIEXPORT int vedis_exec_args(vedis *pStore, SyString *cmd, int argc, vedis_value **argv);
 
 #ifdef __cplusplus
