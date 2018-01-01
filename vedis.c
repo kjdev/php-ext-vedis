@@ -6,7 +6,11 @@
 #include "php_ini.h"
 #include "php_main.h"
 #include "ext/standard/info.h"
+#ifdef ZEND_ENGINE_3
+#include "ext/standard/php_smart_string.h"
+#else
 #include "ext/standard/php_smart_str.h"
+#endif
 #include "zend_exceptions.h"
 
 #include "php_vedis.h"
@@ -19,7 +23,9 @@ ZEND_INI_END()
 zend_class_entry *php_vedis_ce;
 static zend_object_handlers php_vedis_handlers;
 
+#ifdef ZEND_ENGINE_3
 static int le_vedis;
+#endif
 
 typedef struct {
     vedis *store;
@@ -29,8 +35,13 @@ typedef struct {
 } php_vedis_t;
 
 typedef struct {
+#ifndef ZEND_ENGINE_3
     zend_object std;
+#endif
     php_vedis_t *vedis;
+#ifdef ZEND_ENGINE_3
+    zend_object std;
+#endif
 } php_vedis_object_t;
 
 typedef struct {
@@ -66,9 +77,15 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_vedis_param3, 0, 0, 3)
     ZEND_ARG_INFO(0, param3)
 ZEND_END_ARG_INFO()
 
+#ifdef ZEND_ENGINE_3
+#define VEDIS_SELF(self)                                                \
+    self = (php_vedis_object_t *)(                                      \
+      (char *)Z_OBJ_P(getThis()) - XtOffsetOf(php_vedis_object_t, std))
+#else
 #define VEDIS_SELF(self)                                       \
     self = (php_vedis_object_t *)zend_object_store_get_object( \
         getThis() TSRMLS_CC)
+#endif
 
 #define VEDIS_EXCEPTION(...)                                \
     zend_throw_exception_ex(NULL, 0 TSRMLS_CC, __VA_ARGS__)
@@ -134,6 +151,31 @@ ZEND_END_ARG_INFO()
 #define VEDIS_RETURN_LONG()                   \
     RETURN_LONG(vedis_value_to_int64(result))
 
+#ifdef ZEND_ENGINE_3
+#define VEDIS_RETURN_STRING()                                  \
+    if (vedis_value_is_null(result)) {                         \
+        RETURN_NULL();                                         \
+    } else {                                                   \
+        int len = 0;                                           \
+        const char *str = vedis_value_to_string(result, &len); \
+        RETURN_STRINGL(str, len);                              \
+    }
+
+#define VEDIS_RETURN_ARRAY()                                          \
+    array_init(return_value);                                         \
+    if (vedis_value_is_array(result)) {                               \
+        vedis_value *entry;                                           \
+        while ((entry = vedis_array_next_elem(result)) != 0) {        \
+            if (vedis_value_is_null(entry)) {                         \
+                add_next_index_null(return_value);                    \
+            } else {                                                  \
+                int len = 0;                                          \
+                const char *str = vedis_value_to_string(entry, &len); \
+                add_next_index_stringl(return_value, str, len);       \
+            }                                                         \
+        }                                                             \
+    }
+#else
 #define VEDIS_RETURN_STRING()                                  \
     if (vedis_value_is_null(result)) {                         \
         RETURN_NULL();                                         \
@@ -158,6 +200,7 @@ ZEND_END_ARG_INFO()
         }                                                             \
     }
 
+#endif
 
 static void php_vedis_store_destroy(php_vedis_t *vedis)
 {
@@ -215,18 +258,30 @@ php_vedis_get(char *storage, int storage_len, zend_bool is_persistent TSRMLS_DC)
     php_vedis_t *vedis;
     char plist_key[48];
     int plist_key_len;
+#ifdef ZEND_ENGINE_3
+    zend_resource le, *le_p = NULL;
+#else
     zend_rsrc_list_entry le, *le_p = NULL;
+#endif
 
     if (is_persistent) {
         plist_key_len = snprintf(plist_key, 48, "vedis");
         plist_key_len += 1;
 
+#ifdef ZEND_ENGINE_3
+        le_p = zend_hash_str_find_ptr(&EG(persistent_list),
+                                      plist_key, plist_key_len);
+        if (le_p && le_p->type == le_vedis) {
+            return (php_vedis_t *) le_p->ptr;
+        }
+#else
         if (zend_hash_find(&EG(persistent_list), plist_key, plist_key_len,
                            (void *)&le_p) == SUCCESS) {
             if (le_p->type == le_vedis) {
                 return (php_vedis_t *) le_p->ptr;
             }
         }
+#endif
     }
 
     vedis = php_vedis_new(storage, storage_len, is_persistent TSRMLS_CC);
@@ -237,12 +292,22 @@ php_vedis_get(char *storage, int storage_len, zend_bool is_persistent TSRMLS_DC)
     if (is_persistent) {
         le.type = le_vedis;
         le.ptr  = vedis;
+#ifdef ZEND_ENGINE_3
+        GC_REFCOUNT(&le) = 1;
+        if (zend_hash_str_update_mem(&EG(persistent_list),
+                                     (char *)plist_key, plist_key_len,
+                                     &le, sizeof(le)) == NULL) {
+            php_error_docref(NULL TSRMLS_CC, E_ERROR,
+                             "Could not register persistent entry for vedis");
+        }
+#else
         if (zend_hash_update(&EG(persistent_list),
                              (char *)plist_key, plist_key_len, (void *)&le,
                              sizeof(le), NULL) == FAILURE) {
             php_error_docref(NULL TSRMLS_CC, E_ERROR,
                              "Could not register persistent entry for vedis");
         }
+#endif
     }
     return vedis;
 }
@@ -376,7 +441,11 @@ ZEND_METHOD(Vedis, __construct)
 {
     int rc;
     char *storage = NULL;
+#ifdef ZEND_ENGINE_3
+    size_t storage_len;
+#else
     int storage_len = 0;
+#endif
     zend_bool is_persistent = 1;
     php_vedis_object_t *intern;
 #if ZEND_MODULE_API_NO >= 20090626
@@ -411,7 +480,11 @@ ZEND_METHOD(Vedis, __construct)
 ZEND_METHOD(Vedis, get)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(GET, 3, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -431,7 +504,11 @@ ZEND_METHOD(Vedis, get)
 ZEND_METHOD(Vedis, set)
 {
     char *key, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, value_len;
+#else
     int key_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(SET, 3, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -452,7 +529,11 @@ ZEND_METHOD(Vedis, set)
 ZEND_METHOD(Vedis, setnx)
 {
     char *key, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, value_len;
+#else
     int key_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(SETNX, 5, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -473,7 +554,11 @@ ZEND_METHOD(Vedis, setnx)
 ZEND_METHOD(Vedis, del)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(DEL, 3);
 
     if (argc <= 0) {
@@ -481,7 +566,11 @@ ZEND_METHOD(Vedis, del)
         return;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         return;
@@ -489,6 +578,9 @@ ZEND_METHOD(Vedis, del)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         return;
     }
 
@@ -497,13 +589,24 @@ ZEND_METHOD(Vedis, del)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_LONG(0));
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_LONG();
 }
@@ -511,7 +614,11 @@ ZEND_METHOD(Vedis, del)
 ZEND_METHOD(Vedis, exists)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(EXISTS, 6, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -531,7 +638,11 @@ ZEND_METHOD(Vedis, exists)
 ZEND_METHOD(Vedis, incr)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     zval *zv;
     VEDIS_ARGS_PARAM(INCR, 4, 1);
 
@@ -552,7 +663,11 @@ ZEND_METHOD(Vedis, incr)
 ZEND_METHOD(Vedis, incrby)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     zval *zv;
     VEDIS_ARGS_PARAM(INCRBY, 6, 2);
 
@@ -593,7 +708,11 @@ ZEND_METHOD(Vedis, incrby)
 ZEND_METHOD(Vedis, decr)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(DECR, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -613,7 +732,11 @@ ZEND_METHOD(Vedis, decr)
 ZEND_METHOD(Vedis, decrby)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     zval *zv;
     VEDIS_ARGS_PARAM(DECRBY, 6, 2);
 
@@ -654,9 +777,7 @@ ZEND_METHOD(Vedis, decrby)
 ZEND_METHOD(Vedis, mget)
 {
     zval *keys;
-    zval **val;
     size_t n;
-    HashPosition pos;
     VEDIS_PARAM(MGET, 4);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a",
@@ -673,6 +794,17 @@ ZEND_METHOD(Vedis, mget)
 
     VEDIS_ARGS_INIT(n);
 
+#ifdef ZEND_ENGINE_3
+    zval *val;
+    ZEND_HASH_FOREACH_VAL(HASH_OF(keys), val) {
+        if (Z_TYPE_P(val) != IS_STRING) {
+            convert_to_string(val);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL_P(val), Z_STRLEN_P(val));
+    } ZEND_HASH_FOREACH_END();
+#else
+    zval **val;
+    HashPosition pos;
     zend_hash_internal_pointer_reset_ex(HASH_OF(keys), &pos);
     while (zend_hash_get_current_data_ex(HASH_OF(keys),
                                          (void **)&val, &pos) == SUCCESS) {
@@ -682,6 +814,7 @@ ZEND_METHOD(Vedis, mget)
         VEDIS_ARGS_STRING(Z_STRVAL_PP(val), Z_STRLEN_PP(val));
         zend_hash_move_forward_ex(HASH_OF(keys), &pos);
     }
+#endif
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -691,7 +824,11 @@ ZEND_METHOD(Vedis, mget)
 ZEND_METHOD(Vedis, getset)
 {
     char *key, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, value_len;
+#else
     int key_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(GETSET, 6, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -712,7 +849,11 @@ ZEND_METHOD(Vedis, getset)
 ZEND_METHOD(Vedis, rename)
 {
     char *src, *dst;
+#ifdef ZEND_ENGINE_3
+    size_t src_len, dst_len;
+#else
     int src_len, dst_len;
+#endif
     VEDIS_ARGS_PARAM(MOVE, 4, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -733,7 +874,11 @@ ZEND_METHOD(Vedis, rename)
 ZEND_METHOD(Vedis, append)
 {
     char *key, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, value_len;
+#else
     int key_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(APPEND, 6, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -754,7 +899,11 @@ ZEND_METHOD(Vedis, append)
 ZEND_METHOD(Vedis, strlen)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(STRLEN, 6, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -773,9 +922,7 @@ ZEND_METHOD(Vedis, strlen)
 
 ZEND_METHOD(Vedis, mset)
 {
-    zval **val, *members;
-    int key_len;
-    HashPosition pos;
+    zval *members;
     size_t n;
     VEDIS_PARAM(MSET, 4);
 
@@ -793,6 +940,28 @@ ZEND_METHOD(Vedis, mset)
 
     VEDIS_ARGS_INIT(n * 2);
 
+#ifdef ZEND_ENGINE_3
+    zval *val;
+    zend_string *str_key;
+    ulong num_key;
+    ZEND_HASH_FOREACH_KEY_VAL(HASH_OF(members), num_key, str_key, val) {
+        if (Z_TYPE_P(val) != IS_STRING) {
+            convert_to_string(val);
+        }
+        if (str_key) {
+            VEDIS_ARGS_STRING(ZSTR_VAL(str_key), ZSTR_LEN(str_key));
+        } else {
+            smart_string buf = {0};
+            smart_string_append_long(&buf, num_key);
+            smart_string_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_string_free(&buf);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL_P(val), Z_STRLEN_P(val));
+    } ZEND_HASH_FOREACH_END();
+#else
+    zval **val;
+    HashPosition pos;
     zend_hash_internal_pointer_reset_ex(HASH_OF(members), &pos);
     while (zend_hash_get_current_data_ex(HASH_OF(members),
                                          (void **)&val, &pos) == SUCCESS) {
@@ -825,6 +994,7 @@ ZEND_METHOD(Vedis, mset)
 
         zend_hash_move_forward_ex(HASH_OF(members), &pos);
     }
+#endif
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -833,9 +1003,7 @@ ZEND_METHOD(Vedis, mset)
 
 ZEND_METHOD(Vedis, msetnx)
 {
-    zval **val, *members;
-    int key_len;
-    HashPosition pos;
+    zval *members;
     size_t n;
     VEDIS_PARAM(MSETNX, 6);
 
@@ -853,6 +1021,28 @@ ZEND_METHOD(Vedis, msetnx)
 
     VEDIS_ARGS_INIT(n * 2);
 
+#ifdef ZEND_ENGINE_3
+    zval *val;
+    zend_string *str_key;
+    ulong num_key;
+    ZEND_HASH_FOREACH_KEY_VAL(HASH_OF(members), num_key, str_key, val) {
+        if (Z_TYPE_P(val) != IS_STRING) {
+            convert_to_string(val);
+        }
+        if (str_key) {
+            VEDIS_ARGS_STRING(ZSTR_VAL(str_key), ZSTR_LEN(str_key));
+        } else {
+            smart_string buf = {0};
+            smart_string_append_long(&buf, num_key);
+            smart_string_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_string_free(&buf);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL_P(val), Z_STRLEN_P(val));
+    } ZEND_HASH_FOREACH_END();
+#else
+    zval **val;
+    HashPosition pos;
     zend_hash_internal_pointer_reset_ex(HASH_OF(members), &pos);
     while (zend_hash_get_current_data_ex(HASH_OF(members),
                                          (void **)&val, &pos) == SUCCESS) {
@@ -885,6 +1075,7 @@ ZEND_METHOD(Vedis, msetnx)
 
         zend_hash_move_forward_ex(HASH_OF(members), &pos);
     }
+#endif
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -894,7 +1085,11 @@ ZEND_METHOD(Vedis, msetnx)
 ZEND_METHOD(Vedis, hset)
 {
     char *key, *field, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, field_len, value_len;
+#else
     int key_len, field_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(HSET, 4, 3);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sss",
@@ -917,7 +1112,11 @@ ZEND_METHOD(Vedis, hset)
 ZEND_METHOD(Vedis, hsetnx)
 {
     char *key, *field, *value;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, field_len, value_len;
+#else
     int key_len, field_len, value_len;
+#endif
     VEDIS_ARGS_PARAM(HSETNX, 6, 3);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sss",
@@ -940,7 +1139,11 @@ ZEND_METHOD(Vedis, hsetnx)
 ZEND_METHOD(Vedis, hget)
 {
     char *key, *field;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, field_len;
+#else
     int key_len, field_len;
+#endif
     VEDIS_ARGS_PARAM(HGET, 4, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -961,7 +1164,11 @@ ZEND_METHOD(Vedis, hget)
 ZEND_METHOD(Vedis, hlen)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(HLEN, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -981,7 +1188,11 @@ ZEND_METHOD(Vedis, hlen)
 ZEND_METHOD(Vedis, hdel)
 {
     char *key, *field;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, field_len;
+#else
     int key_len, field_len;
+#endif
     VEDIS_ARGS_PARAM(HDEL, 4, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -1002,7 +1213,11 @@ ZEND_METHOD(Vedis, hdel)
 ZEND_METHOD(Vedis, hkeys)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(HKEYS, 5, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1022,7 +1237,11 @@ ZEND_METHOD(Vedis, hkeys)
 ZEND_METHOD(Vedis, hvals)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(HVALS, 5, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1042,7 +1261,11 @@ ZEND_METHOD(Vedis, hvals)
 ZEND_METHOD(Vedis, hgetall)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(HGETALL, 7, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1068,12 +1291,21 @@ ZEND_METHOD(Vedis, hgetall)
                 break;
             }
             if (vedis_value_is_null(entry)) {
+#ifdef ZEND_ENGINE_3
+                add_assoc_null_ex(return_value, key, key_len);
+#else
                 add_assoc_null_ex(return_value, key, key_len + 1);
+#endif
             } else {
                 int len = 0;
                 const char *str = vedis_value_to_string(entry, &len);
+#ifdef ZEND_ENGINE_3
+                add_assoc_stringl_ex(return_value,
+                                     key, key_len, (char *)str, len);
+#else
                 add_assoc_stringl_ex(return_value,
                                      key, key_len + 1, (char *)str, len, 1);
+#endif
             }
         }
     }
@@ -1082,7 +1314,11 @@ ZEND_METHOD(Vedis, hgetall)
 ZEND_METHOD(Vedis, hexists)
 {
     char *key, *field;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, field_len;
+#else
     int key_len, field_len;
+#endif
     VEDIS_ARGS_PARAM(HEXISTS, 7, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -1103,9 +1339,12 @@ ZEND_METHOD(Vedis, hexists)
 ZEND_METHOD(Vedis, hmset)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
-    zval **val, *members;
-    HashPosition pos;
+#endif
+    zval *members;
     size_t n;
     VEDIS_PARAM(HMSET, 5);
 
@@ -1125,6 +1364,28 @@ ZEND_METHOD(Vedis, hmset)
 
     VEDIS_ARGS_STRING(key, key_len);
 
+#ifdef ZEND_ENGINE_3
+    zval *val;
+    zend_string *str_key;
+    ulong num_key;
+    ZEND_HASH_FOREACH_KEY_VAL(HASH_OF(members), num_key, str_key, val) {
+        if (Z_TYPE_P(val) != IS_STRING) {
+            convert_to_string(val);
+        }
+        if (str_key) {
+            VEDIS_ARGS_STRING(ZSTR_VAL(str_key), ZSTR_LEN(str_key));
+        } else {
+            smart_string buf = {0};
+            smart_string_append_long(&buf, num_key);
+            smart_string_0(&buf);
+            VEDIS_ARGS_STRING(buf.c, buf.len);
+            smart_string_free(&buf);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL_P(val), Z_STRLEN_P(val));
+    } ZEND_HASH_FOREACH_END();
+#else
+    zval **val;
+    HashPosition pos;
     zend_hash_internal_pointer_reset_ex(HASH_OF(members), &pos);
     while (zend_hash_get_current_data_ex(HASH_OF(members),
                                          (void **)&val, &pos) == SUCCESS) {
@@ -1157,6 +1418,7 @@ ZEND_METHOD(Vedis, hmset)
 
         zend_hash_move_forward_ex(HASH_OF(members), &pos);
     }
+#endif
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -1166,9 +1428,12 @@ ZEND_METHOD(Vedis, hmset)
 ZEND_METHOD(Vedis, hmget)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
-    zval **val, *fields;
-    HashPosition pos;
+#endif
+    zval *fields;
     size_t n;
     VEDIS_PARAM(HMGET, 5);
 
@@ -1188,6 +1453,17 @@ ZEND_METHOD(Vedis, hmget)
 
     VEDIS_ARGS_STRING(key, key_len);
 
+#ifdef ZEND_ENGINE_3
+    zval *val;
+    ZEND_HASH_FOREACH_VAL(HASH_OF(fields), val) {
+        if (Z_TYPE_P(val) != IS_STRING) {
+            convert_to_string(val);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL_P(val), Z_STRLEN_P(val));
+    } ZEND_HASH_FOREACH_END();
+#else
+    zval **val;
+    HashPosition pos;
     zend_hash_internal_pointer_reset_ex(HASH_OF(fields), &pos);
     while (zend_hash_get_current_data_ex(HASH_OF(fields),
                                          (void **)&val, &pos) == SUCCESS) {
@@ -1197,6 +1473,7 @@ ZEND_METHOD(Vedis, hmget)
         VEDIS_ARGS_STRING(Z_STRVAL_PP(val), Z_STRLEN_PP(val));
         zend_hash_move_forward_ex(HASH_OF(fields), &pos);
     }
+#endif
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
 
@@ -1204,6 +1481,31 @@ ZEND_METHOD(Vedis, hmget)
 
     if (vedis_value_is_array(result)) {
         vedis_value *entry;
+#ifdef ZEND_ENGINE_3
+        zval *val;
+        ZEND_HASH_FOREACH_VAL(HASH_OF(fields), val) {
+            if ((entry = vedis_array_next_elem(result)) == 0) {
+                break;
+            }
+
+            if (Z_TYPE_P(val) != IS_STRING) {
+                convert_to_string(val);
+            }
+
+            if (Z_STRLEN_P(val) > 0) {
+                if (vedis_value_is_null(entry)) {
+                    add_assoc_null_ex(return_value,
+                                      Z_STRVAL_P(val), Z_STRLEN_P(val));
+                } else {
+                    int len = 0;
+                    const char *str = vedis_value_to_string(entry, &len);
+                    add_assoc_stringl_ex(return_value,
+                                         Z_STRVAL_P(val), Z_STRLEN_P(val),
+                                         (char *)str, len);
+                }
+            }
+        } ZEND_HASH_FOREACH_END();
+#else
         zend_hash_internal_pointer_reset_ex(HASH_OF(fields), &pos);
         while (1) {
             if (zend_hash_get_current_data_ex(HASH_OF(fields),
@@ -1233,13 +1535,18 @@ ZEND_METHOD(Vedis, hmget)
 
             zend_hash_move_forward_ex(HASH_OF(fields), &pos);
         }
+#endif
     }
 }
 
 ZEND_METHOD(Vedis, lindex)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     long index;
     VEDIS_ARGS_PARAM(LINDEX, 6, 2);
 
@@ -1261,7 +1568,11 @@ ZEND_METHOD(Vedis, lindex)
 ZEND_METHOD(Vedis, lpop)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(LPOP, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1281,7 +1592,11 @@ ZEND_METHOD(Vedis, lpop)
 ZEND_METHOD(Vedis, lpush)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(LPUSH, 5);
 
     if (argc < 2) {
@@ -1289,7 +1604,11 @@ ZEND_METHOD(Vedis, lpush)
         return;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         return;
@@ -1297,6 +1616,9 @@ ZEND_METHOD(Vedis, lpush)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         return;
     }
 
@@ -1305,13 +1627,24 @@ ZEND_METHOD(Vedis, lpush)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_LONG();
 }
@@ -1319,7 +1652,11 @@ ZEND_METHOD(Vedis, lpush)
 ZEND_METHOD(Vedis, llen)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(LLEN, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1339,7 +1676,11 @@ ZEND_METHOD(Vedis, llen)
 ZEND_METHOD(Vedis, sadd)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(SADD, 4);
 
     if (argc < 2) {
@@ -1347,7 +1688,11 @@ ZEND_METHOD(Vedis, sadd)
         RETURN_FALSE;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         RETURN_FALSE;
@@ -1355,6 +1700,9 @@ ZEND_METHOD(Vedis, sadd)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         RETURN_FALSE;
     }
 
@@ -1363,13 +1711,24 @@ ZEND_METHOD(Vedis, sadd)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_LONG();
 }
@@ -1377,7 +1736,11 @@ ZEND_METHOD(Vedis, sadd)
 ZEND_METHOD(Vedis, scard)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(SCARD, 5, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1397,7 +1760,11 @@ ZEND_METHOD(Vedis, scard)
 ZEND_METHOD(Vedis, sdiff)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(SDIFF, 5);
 
     if (argc < 1) {
@@ -1405,7 +1772,11 @@ ZEND_METHOD(Vedis, sdiff)
         RETURN_FALSE;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         RETURN_FALSE;
@@ -1413,6 +1784,9 @@ ZEND_METHOD(Vedis, sdiff)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         RETURN_FALSE;
     }
 
@@ -1421,13 +1795,24 @@ ZEND_METHOD(Vedis, sdiff)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_ARRAY();
 }
@@ -1435,7 +1820,11 @@ ZEND_METHOD(Vedis, sdiff)
 ZEND_METHOD(Vedis, sinter)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(SINTER, 6);
 
     if (argc < 1) {
@@ -1443,7 +1832,11 @@ ZEND_METHOD(Vedis, sinter)
         RETURN_FALSE;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         RETURN_FALSE;
@@ -1451,6 +1844,9 @@ ZEND_METHOD(Vedis, sinter)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         RETURN_FALSE;
     }
 
@@ -1459,13 +1855,24 @@ ZEND_METHOD(Vedis, sinter)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_ARRAY();
 }
@@ -1473,7 +1880,11 @@ ZEND_METHOD(Vedis, sinter)
 ZEND_METHOD(Vedis, sismember)
 {
     char *key, *member;
+#ifdef ZEND_ENGINE_3
+    size_t key_len, member_len;
+#else
     int key_len, member_len;
+#endif
     VEDIS_ARGS_PARAM(SISMEMBER, 9, 2);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss",
@@ -1494,7 +1905,11 @@ ZEND_METHOD(Vedis, sismember)
 ZEND_METHOD(Vedis, smembers)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(SMEMBERS, 8, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1534,7 +1949,11 @@ ZEND_METHOD(Vedis, spop)
 ZEND_METHOD(Vedis, srem)
 {
     int i, argc = ZEND_NUM_ARGS();
+#ifdef ZEND_ENGINE_3
+    zval *params;
+#else
     zval ***params;
+#endif
     VEDIS_PARAM(SREM, 4);
 
     if (argc < 2) {
@@ -1542,7 +1961,11 @@ ZEND_METHOD(Vedis, srem)
         RETURN_FALSE;
     }
 
+#ifdef ZEND_ENGINE_3
+    params = safe_emalloc(argc, sizeof(zval), 0);
+#else
     params = (zval ***)emalloc(sizeof(zval *) * argc);
+#endif
     if (!params) {
         WRONG_PARAM_COUNT;
         RETURN_FALSE;
@@ -1550,6 +1973,9 @@ ZEND_METHOD(Vedis, srem)
 
     if (zend_get_parameters_array_ex(argc, params) != SUCCESS) {
         WRONG_PARAM_COUNT;
+#ifdef ZEND_ENGINE_3
+        efree(params);
+#endif
         RETURN_FALSE;
     }
 
@@ -1558,13 +1984,24 @@ ZEND_METHOD(Vedis, srem)
     VEDIS_ARGS_INIT(argc);
 
     for (i = 0; i < argc; i++) {
+#ifdef ZEND_ENGINE_3
+        if (Z_TYPE_P(&params[i]) != IS_STRING) {
+            convert_to_string(&params[i]);
+        }
+        VEDIS_ARGS_STRING(Z_STRVAL(params[i]), Z_STRLEN(params[i]));
+#else
         if (Z_TYPE_PP(params[i]) != IS_STRING) {
             convert_to_string(*params[i]);
         }
         VEDIS_ARGS_STRING(Z_STRVAL_PP(params[i]), Z_STRLEN_PP(params[i]));
+#endif
     }
 
     VEDIS_ARGS_EXEC(RETURN_FALSE);
+
+#ifdef ZEND_ENGINE_3
+    efree(params);
+#endif
 
     VEDIS_RETURN_LONG();
 }
@@ -1572,7 +2009,11 @@ ZEND_METHOD(Vedis, srem)
 ZEND_METHOD(Vedis, speek)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(SPEEK, 5, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1592,7 +2033,11 @@ ZEND_METHOD(Vedis, speek)
 ZEND_METHOD(Vedis, stop)
 {
     char *key;
+#ifdef ZEND_ENGINE_3
+    size_t key_len;
+#else
     int key_len;
+#endif
     VEDIS_ARGS_PARAM(STOP, 4, 1);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s",
@@ -1611,8 +2056,6 @@ ZEND_METHOD(Vedis, stop)
 
 ZEND_METHOD(Vedis, commit)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(COMMIT, 6);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1630,8 +2073,6 @@ ZEND_METHOD(Vedis, commit)
 
 ZEND_METHOD(Vedis, rollback)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(ROLLBACK, 8);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1649,8 +2090,6 @@ ZEND_METHOD(Vedis, rollback)
 
 ZEND_METHOD(Vedis, begin)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(BEGIN, 5);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1668,8 +2107,6 @@ ZEND_METHOD(Vedis, begin)
 
 ZEND_METHOD(Vedis, cmdlist)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(CMD_LIST, 8);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1687,8 +2124,6 @@ ZEND_METHOD(Vedis, cmdlist)
 
 ZEND_METHOD(Vedis, tablelist)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(TABLE_LIST, 10);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1706,8 +2141,6 @@ ZEND_METHOD(Vedis, tablelist)
 
 ZEND_METHOD(Vedis, credits)
 {
-    char *key;
-    int key_len;
     VEDIS_PARAM(VEDIS, 5);
 
     if (zend_parse_parameters_none() == FAILURE) {
@@ -1726,7 +2159,11 @@ ZEND_METHOD(Vedis, credits)
 ZEND_METHOD(Vedis, eval)
 {
     char *cmd;
+#ifdef ZEND_ENGINE_3
+    size_t cmd_len;
+#else
     int cmd_len;
+#endif
     int rc;
     php_vedis_object_t *intern;
     vedis_value *result = NULL;
@@ -1758,7 +2195,11 @@ ZEND_METHOD(Vedis, eval)
             } else {
                 int len = 0;
                 const char *str = vedis_value_to_string(entry, &len);
+#ifdef ZEND_ENGINE_3
+                add_next_index_stringl(return_value, str, len);
+#else
                 add_next_index_stringl(return_value, str, len, 1);
+#endif
             }
         }
     } else if (vedis_value_is_int(result)) {
@@ -1766,7 +2207,11 @@ ZEND_METHOD(Vedis, eval)
     } else {
         int len = 0;
         const char *str = vedis_value_to_string(result, &len);
+#ifdef ZEND_ENGINE_3
+        RETURN_STRINGL(str, len);
+#else
         RETURN_STRINGL(str, len, 1);
+#endif
     }
 }
 
@@ -1855,6 +2300,52 @@ static zend_function_entry php_vedis_methods[] = {
     ZEND_FE_END
 };
 
+#ifdef ZEND_ENGINE_3
+static void
+php_vedis_free_storage(zend_object *std)
+{
+    php_vedis_object_t *intern;
+    intern = (php_vedis_object_t *)((char *)std - XtOffsetOf(php_vedis_object_t, std));
+
+    if (!intern) {
+        return;
+    }
+
+    if (intern->vedis) {
+        if (!intern->vedis->is_persistent) {
+            php_vedis_store_destroy(intern->vedis);
+        }
+    }
+
+    zend_object_std_dtor(std);
+}
+
+static zend_object *
+php_vedis_object_new_ex(zend_class_entry *ce, php_vedis_object_t **ptr TSRMLS_DC)
+{
+    php_vedis_object_t *intern;
+
+    intern = ecalloc(1, sizeof(php_vedis_object_t) + zend_object_properties_size(ce));
+    if (ptr) {
+        *ptr = intern;
+    }
+
+    zend_object_std_init(&intern->std, ce);
+    object_properties_init(&intern->std, ce);
+    rebuild_object_properties(&intern->std);
+
+    intern->std.handlers = &php_vedis_handlers;
+
+    return &intern->std;
+}
+
+static zend_object *
+php_vedis_object_new(zend_class_entry *ce TSRMLS_DC)
+{
+    return php_vedis_object_new_ex(ce, NULL TSRMLS_CC);
+}
+
+#else
 static void
 php_vedis_free_storage(void *object TSRMLS_DC)
 {
@@ -1914,6 +2405,7 @@ php_vedis_object_new(zend_class_entry *ce TSRMLS_DC)
 {
     return php_vedis_object_new_ex(ce, NULL TSRMLS_CC);
 }
+#endif
 
 static int
 php_vedis_class_register(TSRMLS_D)
@@ -1932,6 +2424,11 @@ php_vedis_class_register(TSRMLS_D)
     memcpy(&php_vedis_handlers, zend_get_std_object_handlers(),
            sizeof(zend_object_handlers));
 
+#ifdef ZEND_ENGINE_3
+    php_vedis_handlers.offset = XtOffsetOf(php_vedis_object_t, std);
+    php_vedis_handlers.dtor_obj = zend_objects_destroy_object;
+    php_vedis_handlers.free_obj = php_vedis_free_storage;
+#endif
     php_vedis_handlers.clone_obj = NULL;
 
     return SUCCESS;
@@ -1939,11 +2436,19 @@ php_vedis_class_register(TSRMLS_D)
 
 ZEND_RSRC_DTOR_FUNC(php_vedis_dtor)
 {
+#ifdef ZEND_ENGINE_3
+    if (res->ptr) {
+        php_vedis_t *vedis = (php_vedis_t *)res->ptr;
+        php_vedis_store_destroy(vedis);
+        res->ptr = NULL;
+    }
+#else
     if (rsrc->ptr) {
         php_vedis_t *vedis = (php_vedis_t *)rsrc->ptr;
         php_vedis_store_destroy(vedis);
         rsrc->ptr = NULL;
     }
+#endif
 }
 
 ZEND_MINIT_FUNCTION(vedis)
@@ -1955,7 +2460,6 @@ ZEND_MINIT_FUNCTION(vedis)
                                                  module_number);
 
     php_vedis_class_register(TSRMLS_C);
-
 
     return SUCCESS;
 }
